@@ -1,12 +1,3 @@
 name = "genspark-worker"
 main = "worker.js"
 compatibility_date = "2025-01-01"
-compatibility_flags = ["nodejs_compat"]
-
-[[routes]]
-pattern = "genspark.ofshore.dev/*"
-zone_name = "ofshore.dev"
-
-[[routes]]
-pattern = "clone.ofshore.dev/*"
-zone_name = "ofshore.dev"
