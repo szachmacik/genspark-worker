@@ -143,10 +143,14 @@ export default {
       return J({task, clone_result:clone_result.slice(0,400), clone_time_ms, blind_winner, reasoning});
     }
 
+    if(p==="/clone" && request.method==="POST") return handleClone(request, env);
+    if(p==="/clone/status") {
+      const id = url.searchParams.get("id")||"";
+      return handleCloneStatus(id);
+    }
     return J({error:"not found"}, 404);
   }
 };
-
 
 
 // ══════════════════════════════════════════════════════════════
