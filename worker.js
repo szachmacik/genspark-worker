@@ -93,9 +93,7 @@ JSON: {"title":"...","headers":[],"rows":[[]]}`, "build", env);
     // SPARKPAGE
     if(p==="/v1/sparkpages/generate"&&request.method==="POST"){
       const {prompt,title,source_url} = await request.json().catch(()=>({}));
-      const html = await llm(`Stwórz stronę HTML: ${prompt}${source_url?"
-Inspiruj się: "+source_url:""}
-Single file, Tailwind CDN, nowoczesny design. Tylko HTML.`, "build", env);
+      const html = await llm(`Stwórz strone HTML: ${prompt}`, "build", env);
       const slug = Math.random().toString(36).slice(2,10);
       return J({id:crypto.randomUUID(),slug,title:title||prompt?.slice(0,60),public_url:`https://spark.ofshore.dev/${slug}`,html});
     }
