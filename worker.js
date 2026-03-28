@@ -92,10 +92,18 @@ export default {
 
     if(p==="/v1/sheets/generate" && request.method==="POST") {
       const {prompt} = await request.json().catch(()=>({}));
-      const result = await llm(`Arkusz: ${prompt}. JSON: {"title":"...","headers":["kol1"],"rows":[["val"]]}`, "build", env);
+      const result = await llm(`Generate spreadsheet for: ${prompt}. Return ONLY valid JSON, no explanation: {"title":"Example Table","headers":["Column A","Column B","Column C"],"rows":[["val1","val2","val3"],["val4","val5","val6"]]}`, "build", env);
       let data;
-      try { data = JSON.parse(result.replace(/```json|```/g,"").trim()); }
-      catch { data = {title:prompt, headers:[], rows:[]}; }
+      try { 
+        const cleaned = result.replace(/```json|```/g,"").trim();
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        data = match ? JSON.parse(match[0]) : null;
+        if (!data || !data.headers || !data.headers.length) throw new Error("bad data");
+      } catch { 
+        // Fallback: parse as table from text
+        const lines = result.split("\n").filter(l => l.includes("|") || l.match(/\S.*\S.*\S/));
+        data = {title:prompt, headers:["Item","Value","Notes"], rows:lines.slice(0,10).map((l,i)=>[String(i+1), l.trim().slice(0,60), ""])}; 
+      }
       return J({id:crypto.randomUUID(), ...data});
     }
 
