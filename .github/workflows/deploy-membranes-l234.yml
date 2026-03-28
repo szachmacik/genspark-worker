@@ -1,0 +1,69 @@
+name: Deploy Membranes L2 L3 L4
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: git clone https://github.com/szachmacik/genspark-worker.git .
+      - run: npm install -g wrangler@3
+
+      - name: Deploy L2
+        run: wrangler deploy genspark-enhanced.js --name genspark-enhanced --compatibility-date 2025-01-01
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      - run: printf '%s' "${{ secrets.GROQ_KEY }}" | wrangler secret put GROQ_KEY --name genspark-enhanced
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Deploy L3
+        run: wrangler deploy genspark-multiclone.js --name genspark-multiclone --compatibility-date 2025-01-01
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      - run: printf '%s' "${{ secrets.GROQ_KEY }}" | wrangler secret put GROQ_KEY --name genspark-multiclone
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Deploy L4
+        run: wrangler deploy genspark-mesh.js --name genspark-mesh --compatibility-date 2025-01-01
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+
+      - name: Custom Domains
+        env:
+          CF_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT: ${{ secrets.CF_ACCOUNT_ID }}
+        run: |
+          ZONE=f783cda72a2902b86b7f206fc85bb61f
+          for pair in "enhanced.ofshore.dev:genspark-enhanced" "multiclone.ofshore.dev:genspark-multiclone" "mesh.ofshore.dev:genspark-mesh"; do
+            d="${pair%%:*}"; w="${pair##*:}"
+            curl -sf -X PUT "https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT/workers/domains" \
+              -H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json" \
+              -d "{\"environment\":\"production\",\"hostname\":\"$d\",\"service\":\"$w\",\"zone_id\":\"$ZONE\"}" \
+              && echo "$d ok" || true
+          done
+
+      - name: Test
+        run: |
+          sleep 15
+          for w in genspark-enhanced genspark-multiclone genspark-mesh; do
+            CODE=$(curl -sf --max-time 8 "https://$w.maciej-koziej01.workers.dev/health" -w "%{http_code}" -o /dev/null 2>/dev/null)
+            echo "$w: $CODE"
+          done
+
+      - name: Report
+        if: always()
+        run: |
+          curl -s "https://api.telegram.org/bot8394457153:AAFZQ4eMHaiAnmwejmTfWZHI_5KSqhXgCXg/sendMessage" \
+            -d "chat_id=8149345223" \
+            --data-urlencode "text=🧬 MEMBRANY L2+L3+L4: ${{ job.status }}
+enhanced.ofshore.dev (L2 MoA)
+multiclone.ofshore.dev (L3 Factory)
+mesh.ofshore.dev (L4 Mesh)"
