@@ -549,3 +549,146 @@ Noindex: /
     return J({error:"not found"}, 404);
   }
 }
+
+
+// ══════════════════════════════════════════════════════════════
+// ADVISOR ENGINE — autonomiczny doradca "kiedy co warto zrobić"
+// Analizuje URL → porównuje 3 warianty → rekomenduje z ROI
+// ══════════════════════════════════════════════════════════════
+async function handleAdvisor(request, env) {
+  const { url: targetUrl, budget, goal, usage = "medium" } = await request.json().catch(() => ({}));
+  if (!targetUrl) return J({error:"url required. POST {url:'https://app.com', budget:50, goal:'save_costs', usage:'medium'}"}, 400);
+
+  // RÓWNOLEGLE: scrape + provider detection
+  const [htmlResult] = await Promise.allSettled([
+    fetch(targetUrl, {headers:{"User-Agent":"Mozilla/5.0"}, signal:AbortSignal.timeout(12000)})
+      .then(r => r.text()).catch(() => "")
+  ]);
+  const html = htmlResult.status === "fulfilled" ? htmlResult.value : "";
+  const appName = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] || targetUrl.split("/")[2] || "App";
+
+  // Detect providers + generate benchmark w jednym pass
+  const providers = await detectProviders(targetUrl, html, env);
+  const benchmark = generateBenchmark(appName, targetUrl, providers, usage);
+
+  const costs = benchmark.costs;
+  const gk = env.GROQ_KEY || "";
+
+  // ADVISOR LOGIC — wylicz ROI i rekomendacje
+  const TIER_HOURS = {light:20, medium:80, heavy:200}; // roboczogodziny/miesiąc
+  const DEV_RATE = 150; // zł/h (wycena dev time)
+  const userBudget = budget || 100; // zł/miesiąc domyślnie
+
+  const recommendations = {
+    variant_A: {
+      label: "Genspark 1:1 (oryginalni dostawcy)",
+      cost_monthly: costs.A.total,
+      cost_yearly: +(costs.A.total * 12).toFixed(2),
+      roi_vs_budget: +((userBudget - costs.A.total) / Math.max(costs.A.total, 0.01) * 100).toFixed(0),
+      fits_budget: costs.A.total <= userBudget,
+      pros: ["Najwyższa jakość LLM (GPT-5.2)", "Natywne integracje", "Gotowe SLA"],
+      cons: ["Najdroższy", "Vendor lock-in", "Brak kontroli nad modelem", "Dane u dostawcy"],
+      when_use: "Gdy klient wymaga brand OpenAI i budżet >$" + Math.round(costs.A.total * 1.5) + "/mies",
+    },
+    variant_B: {
+      label: "Best-of-Breed (optymalne alternatywy)",
+      cost_monthly: costs.B.total,
+      cost_yearly: +(costs.B.total * 12).toFixed(2),
+      roi_vs_budget: +((userBudget - costs.B.total) / Math.max(costs.B.total, 0.01) * 100).toFixed(0),
+      fits_budget: costs.B.total <= userBudget,
+      pros: ["Groq 276 T/s (5× szybszy od OpenAI)", "FLUX.1-Free ($0 obrazy)", "-" + benchmark.savings["B_vs_A"] + " vs A", "Łatwa migracja"],
+      cons: ["Nieco niższa jakość LLM (−15%)", "Brak Call For Me bez OpenAI Realtime"],
+      when_use: "Optymalny default dla 90% przypadków. ROI breakeven w " + Math.max(1, Math.ceil(costs.A.total / Math.max(costs.A.total - costs.B.total, 0.01))) + " mies vs A",
+    },
+    variant_C: {
+      label: "ofshore.dev Mesh (własny stack)",
+      cost_monthly: costs.C.total,
+      cost_yearly: +(costs.C.total * 12).toFixed(2),
+      roi_vs_budget: +((userBudget - costs.C.total) / Math.max(costs.C.total, 0.01) * 100).toFixed(0),
+      fits_budget: costs.C.total <= userBudget,
+      pros: ["57+ Workers mesh", "Zero vendor lock-in", "Groq free tier", "Pełna autonomia", "Sentinel immune system"],
+      cons: ["Wymaga DigitalOcean $12/mies", "Dev setup raz", "Mniejsza community support"],
+      when_use: "Gdy chcesz własny produkt bez limitów. Jedyna opcja z MoA + agentami + self-heal",
+    }
+  };
+
+  // REKOMENDACJA automatyczna
+  const goalMap = {
+    save_costs: "C",
+    best_quality: "A",
+    balanced: "B",
+    autonomy: "C",
+    fast_deploy: "B",
+    privacy: "C",
+  };
+  const recommended = goalMap[goal] || (costs.B.total <= userBudget ? "B" : costs.C.total <= userBudget ? "C" : "A");
+
+  // LLM advisor — głębsza analiza
+  let llm_advice = "";
+  if (gk && providers.length > 0) {
+    try {
+      const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method:"POST",
+        headers:{"Authorization":"Bearer "+gk,"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"llama-3.1-8b-instant", max_tokens:400,
+          messages:[{role:"user", content:
+            `App: ${appName} (${targetUrl})
+Detected providers: ${providers.map(p=>p.name).join(", ")||"unknown"}
+Budget: $${userBudget}/month, Goal: ${goal||"balanced"}, Usage: ${usage}
+Costs: A=$${costs.A.total} B=$${costs.B.total} C=$${costs.C.total}
+Give a 3-sentence concrete recommendation in Polish. Be direct, no fluff.`}]
+        }),
+        signal: AbortSignal.timeout(15000)
+      });
+      const d = await r.json();
+      llm_advice = d.choices?.[0]?.message?.content || "";
+    } catch(e) {}
+  }
+
+  // Notify Telegram
+  const TG = "8394457153:AAFZQ4eMHaiAnmwejmTfWZHI_5KSqhXgCXg";
+  fetch(`https://api.telegram.org/bot${TG}/sendMessage`, {
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({chat_id:"8149345223", text:
+      `🧠 Advisor: ${appName}\nBudżet: $${userBudget} | Cel: ${goal||"balanced"}\nRekomendacja: Wariant ${recommended}\nKoszt: $${costs[recommended].total}/mies`})
+  }).catch(()=>{});
+
+  return J({
+    ok: true,
+    app: appName,
+    url: targetUrl,
+    providers_detected: providers.map(p=>({name:p.name,cat:p.cat})),
+    budget_monthly: userBudget,
+    goal,
+    usage_tier: usage,
+    recommendation: recommended,
+    recommendation_label: recommendations[`variant_${recommended}`].label,
+    llm_advice,
+    variants: recommendations,
+    benchmark: {
+      costs,
+      savings: benchmark.savings,
+      pricing_source: benchmark.pricing_source
+    },
+    roi_summary: {
+      A_yearly: `$${costs.A.total * 12}/rok`,
+      B_yearly: `$${costs.B.total * 12}/rok`,
+      C_yearly: `$${costs.C.total * 12}/rok`,
+      B_saves_vs_A_yearly: `$${+(costs.A.total * 12 - costs.B.total * 12).toFixed(2)}/rok`,
+      C_saves_vs_A_yearly: `$${+(costs.A.total * 12 - costs.C.total * 12).toFixed(2)}/rok`,
+    }
+  });
+}
+
+// Szybki status klona z Upstash
+async function handleCloneStatus(cloneId) {
+  try {
+    const UPS = "https://fresh-walleye-84119.upstash.io";
+    const UT = "gQAAAAAAAUiXAAIncDEwMjljNTI2ZGQ5OWQ0OGJlOTFmYWU2YjQ2OGI0NmIyZXAxODQxMTk";
+    const r = await fetch(`${UPS}/get/${encodeURIComponent("clone:"+cloneId)}`, {headers:{"Authorization":"Bearer "+UT}});
+    const d = await r.json();
+    if (d.result) return J(JSON.parse(d.result));
+    return J({error:"clone not found", clone_id:cloneId}, 404);
+  } catch(e) { return J({error:e.message}, 500); }
+}
