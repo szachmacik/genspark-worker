@@ -14,16 +14,52 @@ const D1_ACCOUNT_S = "9a877cdba770217082a2f914427df505";
 const D1_DB_S = "4c67a2b1-6830-44ec-97b1-7c8f93722add";
 
 async function trackUsage(type, latencyMs, env) {
-  const tok = env.CF_API_TOKEN || "";
-  if(!tok) return;
+  // Upstash — szybki, pewny, nie wymaga CF D1 API token z uprawnieniami D1 Edit
+  const UPS = "https://fresh-walleye-84119.upstash.io";
+  const UT  = "gQAAAAAAAUiXAAIncDEwMjljNTI2ZGQ5OWQ0OGJlOTFmYWU2YjQ2OGI0NmIyZXAxODQxMTk";
   const cost = REAL_COSTS[type] || 0;
+  const day  = new Date().toISOString().slice(0,10);
   try {
-    await fetch(`https://api.cloudflare.com/client/v4/accounts/${D1_ACCOUNT_S}/d1/database/${D1_DB_S}/query`,{method:"POST",headers:{"Authorization":"Bearer "+tok,"Content-Type":"application/json"},body:JSON.stringify({sql:"INSERT INTO usage_stats (type,cost_usd,latency_ms,model) VALUES (?,?,?,?)",params:[type,cost,latencyMs,type]})});
-  } catch(e) {}
+    // Inkrementuj liczniki
+    await Promise.all([
+      fetch(`${UPS}/incr/stats:total_queries`, {method:"POST",headers:{"Authorization":"Bearer "+UT}}),
+      fetch(`${UPS}/incr/stats:today:${day}`, {method:"POST",headers:{"Authorization":"Bearer "+UT}}),
+      fetch(`${UPS}/expire/stats:today:${day}/86400`, {headers:{"Authorization":"Bearer "+UT}}),
+      fetch(`${UPS}/incrbyfloat/stats:cost_total/${cost}`, {method:"POST",headers:{"Authorization":"Bearer "+UT}}),
+      fetch(`${UPS}/lpush/stats:recent/${encodeURIComponent(JSON.stringify({type,latencyMs,cost,ts:new Date().toISOString().slice(0,19)}))}`, {method:"POST",headers:{"Authorization":"Bearer "+UT}}),
+      fetch(`${UPS}/ltrim/stats:recent/0/99`, {method:"POST",headers:{"Authorization":"Bearer "+UT}}),
+    ]);
+  } catch(e) {} // fire and forget
 }
 
 async function handleStats(env) {
-  return Response.json({total_queries:0,data_source:"real_d1",note:"Real metrics only. No fake social proof.",powered_by:"Groq Llama 3.3 70B (free)",pricing:REAL_COSTS,what_we_dont_do:["fake urgency","fake user counts","sycophantic AI","data selling","confirmshaming","hidden cancellation"]},{headers:{"Access-Control-Allow-Origin":"*"}});
+  const UPS = "https://fresh-walleye-84119.upstash.io";
+  const UT  = "gQAAAAAAAUiXAAIncDEwMjljNTI2ZGQ5OWQ0OGJlOTFmYWU2YjQ2OGI0NmIyZXAxODQxMTk";
+  const day = new Date().toISOString().slice(0,10);
+  let total=0, today=0, cost=0, recent=[];
+  try {
+    const [tRes,dRes,cRes,rRes] = await Promise.all([
+      fetch(`${UPS}/get/stats:total_queries`,{headers:{"Authorization":"Bearer "+UT}}).then(r=>r.json()),
+      fetch(`${UPS}/get/stats:today:${day}`,{headers:{"Authorization":"Bearer "+UT}}).then(r=>r.json()),
+      fetch(`${UPS}/get/stats:cost_total`,{headers:{"Authorization":"Bearer "+UT}}).then(r=>r.json()),
+      fetch(`${UPS}/lrange/stats:recent/0/9`,{headers:{"Authorization":"Bearer "+UT}}).then(r=>r.json()),
+    ]);
+    total = parseInt(tRes.result||0);
+    today = parseInt(dRes.result||0);
+    cost  = parseFloat(cRes.result||0);
+    recent= (rRes.result||[]).map(s=>{try{return JSON.parse(decodeURIComponent(s))}catch{return{}}});
+  } catch(e) {}
+  return Response.json({
+    total_queries: total,
+    queries_today: today,
+    total_cost_usd: cost.toFixed(4),
+    recent_queries: recent.slice(0,5),
+    data_source: "upstash_realtime",
+    note: "Real metrics. No fake social proof.",
+    powered_by: "Groq Llama 3.3 70B (free tier)",
+    pricing: REAL_COSTS,
+    what_we_dont_do: ["fake urgency","fake user counts","sycophantic AI","data selling","confirmshaming"]
+  },{headers:{"Access-Control-Allow-Origin":"*"}});
 }
 
 async function handleTransparency() {
