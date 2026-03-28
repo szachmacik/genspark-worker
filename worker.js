@@ -460,6 +460,15 @@ Noindex: /
       return J({task, clone_result:clone_result.slice(0,400), clone_time_ms, blind_winner, reasoning});
     }
 
+    if(p==="/v1/providers/analyze" && request.method==="POST") return handleProviderAnalysis(request, env);
+    if(p==="/v1/benchmark/compare" && request.method==="POST") {
+      const {url:bUrl, usage:bUsage}=await request.json().catch(()=>({}));
+      if(!bUrl) return J({error:"url required"},400);
+      let bHtml=""; try{const br=await fetch(bUrl,{headers:{"User-Agent":"Mozilla/5.0"},signal:AbortSignal.timeout(15000)});bHtml=await br.text();}catch(e){}
+      const bProv=await detectProviders(bUrl,bHtml,env);
+      const bName=bHtml.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]||bUrl.split("/")[2]||"App";
+      return J(generateBenchmark(bName,bUrl,bProv,bUsage||"medium"));
+    }
     if(p==="/clone" && request.method==="POST") return handleClone(request, env);
     if(p==="/clone/status") {
       const id = url.searchParams.get("id")||"";
