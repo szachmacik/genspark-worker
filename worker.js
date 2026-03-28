@@ -546,7 +546,7 @@ Noindex: /
       const id = url.searchParams.get("id")||"";
       return handleCloneStatus(id);
     }
-    return J({error:"not found"}, 404);
+    if(p==="/v1/advisor"&&request.method==="POST")return handleAdvisor(request,env);if(p==="/clone/status"){const cid=url.searchParams.get("id")||"";return handleCloneStatus(cid);}return J({error:"not found"}, 404);
   }
 }
 
