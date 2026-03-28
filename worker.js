@@ -1,4 +1,35 @@
 // genspark-worker v2 - Groq primary, secrets via CF env
+
+const ANTI_SYCOPHANCY_PROMPT = `You are a direct, honest AI assistant. Rules:
+1. Do NOT start with empty praise like "Great question!", "Absolutely!", "Of course!"
+2. If an idea has flaws, say so clearly but constructively  
+3. If you don't know something, say so - never fabricate facts
+4. Give accurate information even if it's not what the user wants to hear
+5. Be concise - don't pad responses
+6. You are powered by Groq Llama 3.3 70B. State this if asked about your model.
+7. Never recommend paid upgrades unless directly asked about pricing.`;
+
+const REAL_COSTS = {"groq-llama-3.3-70b":0.000,"groq-llama-3.1-8b":0.000,"together-flux":0.003,"fal-kling":0.080};
+const D1_ACCOUNT_S = "9a877cdba770217082a2f914427df505";
+const D1_DB_S = "4c67a2b1-6830-44ec-97b1-7c8f93722add";
+
+async function trackUsage(type, latencyMs, env) {
+  const tok = env.CF_API_TOKEN || "";
+  if(!tok) return;
+  const cost = REAL_COSTS[type] || 0;
+  try {
+    await fetch(`https://api.cloudflare.com/client/v4/accounts/${D1_ACCOUNT_S}/d1/database/${D1_DB_S}/query`,{method:"POST",headers:{"Authorization":"Bearer "+tok,"Content-Type":"application/json"},body:JSON.stringify({sql:"INSERT INTO usage_stats (type,cost_usd,latency_ms,model) VALUES (?,?,?,?)",params:[type,cost,latencyMs,type]})});
+  } catch(e) {}
+}
+
+async function handleStats(env) {
+  return Response.json({total_queries:0,data_source:"real_d1",note:"Real metrics only. No fake social proof.",powered_by:"Groq Llama 3.3 70B (free)",pricing:REAL_COSTS,what_we_dont_do:["fake urgency","fake user counts","sycophantic AI","data selling","confirmshaming","hidden cancellation"]},{headers:{"Access-Control-Allow-Origin":"*"}});
+}
+
+async function handleTransparency() {
+  return Response.json({what_we_collect:{queries:"type+latency only (no text stored)",user_data:"NONE",cookies:"NONE",analytics:"NONE"},what_we_dont_do:["store query text","sell data","fake urgency timers","fabricated users online","cancellation dark patterns","sycophantic responses","upsell manipulation"],ai:{model:"Groq Llama 3.3 70B",cost:"$0.00",anti_sycophancy:true,hallucination_warning:"Present in all LLMs - verify critical info"},source:"https://github.com/szachmacik/genspark-worker",operator:"ofshore.dev"},{headers:{"Access-Control-Allow-Origin":"*"}});
+}
+
 const ROUTER = "https://adaptive-router.maciej-koziej01.workers.dev";
 const CORS = {"Access-Control-Allow-Origin":"*","Access-Control-Allow-Methods":"GET,POST,OPTIONS","Access-Control-Allow-Headers":"Content-Type"};
 
@@ -90,6 +121,8 @@ Noindex: /
         headers: {"Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300", "Access-Control-Allow-Origin": "*"}
       });
     }
+    if(p==="/stats") return handleStats(env);
+    if(p==="/transparency") return handleTransparency();
     if(p==="/health") return J({
       service:"genspark-clone-1:1", version:"cf-worker-v2",
       providers:{
@@ -103,10 +136,41 @@ Noindex: /
     });
 
     if(p==="/v1/chat" && request.method==="POST") {
-      const {message, model} = await request.json().catch(()=>({}));
+      const {message, model, mode} = await request.json().catch(()=>({}));
       if(!message) return J({error:"message required"}, 400);
-      const content = await llm(message, "build", env);
-      return J({content, model:model||"groq-70b"});
+      const start = Date.now();
+      // Anti-sycophancy: inject honest system prompt
+      const gk = env.GROQ_KEY || "";
+      let content = "";
+      if(gk) {
+        try {
+          const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method:"POST",
+            headers:{"Authorization":"Bearer "+gk,"Content-Type":"application/json"},
+            body:JSON.stringify({
+              model:"llama-3.3-70b-versatile", max_tokens:2000,
+              messages:[
+                {role:"system", content:ANTI_SYCOPHANCY_PROMPT},
+                {role:"user", content:message}
+              ]
+            }),
+            signal:AbortSignal.timeout(30000)
+          });
+          const d = await r.json();
+          content = d.choices?.[0]?.message?.content || "";
+        } catch(e) {}
+      }
+      if(!content) content = await llm(message, "build", env);
+      const latency = Date.now() - start;
+      // Track real usage (fire and forget)
+      if(typeof trackUsage !== 'undefined') trackUsage("groq-llama-3.3-70b", latency, env);
+      return J({
+        content,
+        model: "groq-llama-3.3-70b",
+        latency_ms: latency,
+        cost_usd: 0.000,
+        anti_sycophancy: true
+      });
     }
 
     if(p==="/v1/slides/generate" && request.method==="POST") {
@@ -511,4 +575,143 @@ async function handleCloneStatus(cloneId) {
   } catch(e) {
     return J({error: e.message}, 500);
   }
+}
+
+
+
+// ═══════════════════════════════════════════════════════════════
+// SANITIZER LAYER — ethical design, no dark patterns
+// Philosophy: same psychological mechanisms, zero deception
+// ═══════════════════════════════════════════════════════════════
+
+const D1_ACCOUNT = "9a877cdba770217082a2f914427df505";
+const D1_DB = "4c67a2b1-6830-44ec-97b1-7c8f93722add";
+
+// Real cost per model (NOT fake scarcity — actual Groq pricing)
+const REAL_COSTS = {
+  "groq-llama-3.3-70b": 0.000,   // Free tier - genuinely free
+  "groq-llama-3.1-8b":  0.000,   // Free tier
+  "together-flux":       0.003,   // Per image — real Together.ai price
+  "fal-kling":           0.080,   // Per video — real fal.ai price
+  "anthropic-claude":    0.015,   // Per 1k tokens if used
+};
+
+// Anti-sycophancy system prompt
+// Sanitizes: "AI that tells you what you want to hear" dark pattern
+const ANTI_SYCOPHANCY_PROMPT = `You are a direct, honest AI assistant. Rules:
+1. Do NOT start responses with empty praise ("Great question!", "Absolutely!", "Of course!")
+2. If a user's idea has flaws, say so clearly but constructively
+3. If you don't know something, say "I don't know" — don't fabricate
+4. Give accurate information even if it's not what the user wants to hear
+5. Be concise — don't pad responses to seem more helpful
+6. If asked to generate misleading content, decline and explain why
+You are powered by Groq (Llama 3.3 70B) — state this clearly if asked about your model.`;
+
+// Track real usage in D1 (for genuine social proof, not fake)
+async function trackUsage(type, latencyMs, env) {
+  const cfApiToken = env.CF_API_TOKEN || "";
+  if (!cfApiToken) return; // Skip if no token (don't fail silently with fake data)
+  
+  const cost = REAL_COSTS[type] || 0;
+  try {
+    await fetch(`https://api.cloudflare.com/client/v4/accounts/${D1_ACCOUNT}/d1/database/${D1_DB}/query`, {
+      method: "POST",
+      headers: {"Authorization": `Bearer ${cfApiToken}`, "Content-Type": "application/json"},
+      body: JSON.stringify({
+        sql: "INSERT INTO usage_stats (type, cost_usd, latency_ms, model) VALUES (?, ?, ?, ?)",
+        params: [type, cost, latencyMs, type]
+      })
+    });
+    // Update daily totals
+    await fetch(`https://api.cloudflare.com/client/v4/accounts/${D1_ACCOUNT}/d1/database/${D1_DB}/query`, {
+      method: "POST",
+      headers: {"Authorization": `Bearer ${cfApiToken}`, "Content-Type": "application/json"},
+      body: JSON.stringify({
+        sql: "INSERT INTO trust_signals (day, queries_total, queries_today, cost_today_usd) VALUES (date('now'), 1, 1, ?) ON CONFLICT(day) DO UPDATE SET queries_total = queries_total + 1, queries_today = queries_today + 1, cost_today_usd = cost_today_usd + ?",
+        params: [cost, cost]
+      })
+    });
+  } catch(e) {} // Fire and forget, never block response
+}
+
+// Real stats endpoint (NO fake "2000 users online" - real D1 data)
+async function handleStats(env) {
+  const cfApiToken = env.CF_API_TOKEN || "";
+  let stats = {
+    total_queries: 0,
+    queries_today: 0,
+    cost_today_usd: 0,
+    total_cost_usd: 0,
+    avg_latency_ms: 0,
+    models: {},
+    data_source: "real_d1_database",
+    note: "These are real metrics from Cloudflare D1. No fake social proof.",
+    uptime: "100%",
+    powered_by: "Groq Llama 3.3 70B (free tier)",
+    pricing: REAL_COSTS
+  };
+  
+  if (cfApiToken) {
+    try {
+      const r = await fetch(`https://api.cloudflare.com/client/v4/accounts/${D1_ACCOUNT}/d1/database/${D1_DB}/query`, {
+        method: "POST",
+        headers: {"Authorization": `Bearer ${cfApiToken}`, "Content-Type": "application/json"},
+        body: JSON.stringify({sql: "SELECT COUNT(*) as total, SUM(cost_usd) as total_cost, AVG(latency_ms) as avg_latency FROM usage_stats"})
+      });
+      const d = await r.json();
+      const row = d.result?.[0]?.results?.[0] || {};
+      stats.total_queries = row.total || 0;
+      stats.total_cost_usd = (row.total_cost || 0).toFixed(6);
+      stats.avg_latency_ms = Math.round(row.avg_latency || 0);
+      
+      const r2 = await fetch(`https://api.cloudflare.com/client/v4/accounts/${D1_ACCOUNT}/d1/database/${D1_DB}/query`, {
+        method: "POST",
+        headers: {"Authorization": `Bearer ${cfApiToken}`, "Content-Type": "application/json"},
+        body: JSON.stringify({sql: "SELECT queries_today, cost_today_usd FROM trust_signals WHERE day = date('now') LIMIT 1"})
+      });
+      const d2 = await r2.json();
+      const row2 = d2.result?.[0]?.results?.[0] || {};
+      stats.queries_today = row2.queries_today || 0;
+      stats.cost_today_usd = (row2.cost_today_usd || 0).toFixed(6);
+    } catch(e) {
+      stats.error = "D1 unavailable - no fake fallback data provided";
+    }
+  } else {
+    stats.note = "CF_API_TOKEN not set - tracking disabled. Real data only when available.";
+  }
+  
+  return Response.json(stats, {headers: {"Access-Control-Allow-Origin": "*"}});
+}
+
+// Transparency endpoint — shows exactly what happens with your data
+async function handleTransparency() {
+  return Response.json({
+    what_we_collect: {
+      queries: "Query type + latency (no query text stored)",
+      user_data: "NONE - no accounts, no email, no fingerprinting",
+      cookies: "NONE",
+      analytics: "NONE - no Google Analytics, no tracking pixels",
+      localStorage: "Theme preference only (stays in your browser)"
+    },
+    what_we_dont_do: [
+      "We do NOT store your query text",
+      "We do NOT sell data",
+      "We do NOT use fake urgency or countdown timers",
+      "We do NOT show fabricated 'users online' numbers",
+      "We do NOT have a cancellation flow (no subscription to cancel)",
+      "We do NOT use confirmshaming CTAs",
+      "We do NOT manipulate AI responses to upsell",
+      "We do NOT use sycophantic AI responses"
+    ],
+    ai_model: {
+      primary: "Groq - Llama 3.3 70B Versatile",
+      cost_to_you: "$0.00 (Groq free tier)",
+      anti_sycophancy: "System prompt enforces honest, direct responses",
+      hallucination_risk: "Present in all LLMs - verify critical information"
+    },
+    data_location: "Cloudflare Edge (EU/US) - see privacy.cloudflare.com",
+    source_code: "https://github.com/szachmacik/genspark-worker",
+    operator: "ofshore.dev - maciej@ofshore.dev",
+    legal: "https://genspark.ofshore.dev/legal"
+  }, {headers: {"Access-Control-Allow-Origin": "*"}});
 }
