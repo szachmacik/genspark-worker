@@ -469,7 +469,79 @@ Noindex: /
       const bName=bHtml.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1]||bUrl.split("/")[2]||"App";
       return J(generateBenchmark(bName,bUrl,bProv,bUsage||"medium"));
     }
-    if(p==="/clone" && request.method==="POST") return handleClone(request, env);
+    if(p==="/clone" && request.method==="POST") {
+      const {url: targetUrl, deploy=false} = await request.json().catch(()=>({}));
+      if(!targetUrl) return J({error:"url required. POST {url:'https://app.com', deploy:false}"}, 400);
+      const cloneId = "clone-" + Date.now().toString(36);
+      const gk = env.GROQ_KEY || "";
+      
+      // Faza 1: Scrape
+      let html = ""; let ok = false;
+      try {
+        const r = await fetch(targetUrl, {headers:{"User-Agent":"Mozilla/5.0"},signal:AbortSignal.timeout(20000)});
+        html = await r.text(); ok = true;
+      } catch(e) {}
+      
+      const title = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] || targetUrl.split("/")[2] || "App";
+      
+      // Faza 2: Analyze via Groq
+      let analysis = {app_name:title, category:"web_app", core_features:[], tech_stack:[], ui_components:[], main_value_prop:"AI-powered workspace", api_endpoints:[]};
+      if(gk && html) {
+        try {
+          const r = await fetch("https://api.groq.com/openai/v1/chat/completions",{
+            method:"POST", headers:{"Authorization":"Bearer "+gk,"Content-Type":"application/json"},
+            body:JSON.stringify({model:"llama-3.1-8b-instant",max_tokens:600,
+              messages:[{role:"user",content:"Analyze this web app. URL: "+targetUrl+"\nHTML: "+html.slice(0,2000)+"\nReturn ONLY JSON: {app_name,category,core_features:[],tech_stack:[],ui_components:[],main_value_prop,api_endpoints:[]}"}]}),
+            signal:AbortSignal.timeout(20000)
+          });
+          const d = await r.json();
+          const txt = d.choices?.[0]?.message?.content || "{}";
+          const parsed = JSON.parse(txt.replace(/```json|```/g,"").trim());
+          if(parsed.app_name) analysis = {...analysis, ...parsed};
+        } catch(e) {}
+      }
+      
+      // Faza 3: Generate code
+      let code_str = "";
+      if(gk) {
+        try {
+          const r = await fetch("https://api.groq.com/openai/v1/chat/completions",{
+            method:"POST",headers:{"Authorization":"Bearer "+gk,"Content-Type":"application/json"},
+            body:JSON.stringify({model:"llama-3.3-70b-versatile",max_tokens:2000,
+              messages:[{role:"user",content:"Generate FastAPI clone of "+analysis.app_name+" ("+targetUrl+"). Features: "+analysis.core_features.join(",")+". Return ONLY Python code starting with 'from fastapi'."}]}),
+            signal:AbortSignal.timeout(40000)
+          });
+          const d = await r.json();
+          code_str = d.choices?.[0]?.message?.content || "";
+        } catch(e) {}
+      }
+      
+      // Faza 4: Provider detection + auto benchmark
+      const detectedProviders = await detectProviders(targetUrl, html, env);
+      const autoBenchmark = generateBenchmark(analysis.app_name, targetUrl, 
+        detectedProviders.length > 0 ? detectedProviders : [
+          {key:"openai",cat:"llm",name:"OpenAI GPT-5.2",priceIn:1.75,priceOut:14.00,altB:"Groq Llama 3.3 70B",altBPrIn:0.59,altBPrOut:0.79,altC:"Groq free tier",altCPr:0.00},
+          {key:"together",cat:"image",name:"Together.ai FLUX",price:0.003,altB:"Together free",altBPr:0.00,altC:"Together free",altCPr:0.00},
+          {key:"twilio",cat:"phone",name:"Twilio Voice",price:0.013,altB:"Twilio Voice",altBPr:0.013,altC:"Twilio Voice",altCPr:0.013},
+        ], "medium");
+      
+      // Notify Telegram
+      const TG = "8394457153:AAFZQ4eMHaiAnmwejmTfWZHI_5KSqhXgCXg";
+      fetch("https://api.telegram.org/bot"+TG+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:"8149345223",text:"🧬 Clone: "+analysis.app_name+"\nID: "+cloneId+"\nCode: "+code_str.length+" chars\nBenchmark A:$"+autoBenchmark.costs?.A?.total+" B:$"+autoBenchmark.costs?.B?.total+" C:$"+autoBenchmark.costs?.C?.total})}).catch(()=>{});
+      
+      return J({
+        ok: true,
+        clone_id: cloneId,
+        source_url: targetUrl,
+        analysis,
+        code_length: code_str.length,
+        code_preview: code_str.slice(0,400),
+        providers_detected: detectedProviders.map(p=>({name:p.name,cat:p.cat})),
+        benchmark: autoBenchmark,
+        benchmark_url: new URL(request.url).origin+"/v1/benchmark/compare",
+        deploy: {ok:false, info:"POST /v1/providers/analyze for cost comparison"},
+      });
+    }
     if(p==="/clone/status") {
       const id = url.searchParams.get("id")||"";
       return handleCloneStatus(id);
