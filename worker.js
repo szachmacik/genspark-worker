@@ -261,3 +261,208 @@ Noindex: /
     return J({error:"not found"}, 404);
   }
 };
+
+
+
+// ═══════════════════════════════════════════════════════════════
+// PROVIDER DETECTION ENGINE + AUTO BENCHMARK
+// Autonomicznie wykrywa dostawców i generuje benchmark 3 wariantów
+// ═══════════════════════════════════════════════════════════════
+
+// Baza znanych dostawców (rozpoznawane z HTML/JS/headers)
+const KNOWN_PROVIDERS = {
+  // LLM
+  "openai":      { cat:"llm",    name:"OpenAI GPT-5.2",        priceIn:1.75, priceOut:14.00, altB:"Groq Llama 3.3 70B", altBPrIn:0.59, altBPrOut:0.79, altC:"Groq free tier", altCPr:0.00 },
+  "anthropic":   { cat:"llm",    name:"Anthropic Claude",      priceIn:3.00, priceOut:15.00, altB:"Groq Llama 3.3 70B", altBPrIn:0.59, altBPrOut:0.79, altC:"Groq free tier", altCPr:0.00 },
+  "groq":        { cat:"llm",    name:"Groq",                  priceIn:0.59, priceOut:0.79,  altB:"Groq (ty też)",      altBPrIn:0.59, altBPrOut:0.79, altC:"Groq free tier", altCPr:0.00 },
+  "together":    { cat:"image",  name:"Together.ai FLUX",      price:0.003,  altB:"Together free tier", altBPr:0.00, altC:"Together free tier", altCPr:0.00 },
+  "fal.ai":      { cat:"video",  name:"fal.ai video",          price:0.07,   altB:"fal.ai Wan 2.5",     altBPr:0.05, altC:"fal.ai Wan 2.5",     altCPr:0.05 },
+  "twilio":      { cat:"phone",  name:"Twilio Voice",          price:0.013,  altB:"Twilio Voice",        altBPr:0.013,altC:"Twilio Voice",       altCPr:0.013 },
+  "sendgrid":    { cat:"email",  name:"SendGrid",              price:0.0001, altB:"Resend",              altBPr:0.00008, altC:"Resend free",      altCPr:0.00 },
+  "tavily":      { cat:"search", name:"Tavily Search",         price:0.005,  altB:"Tavily cheaper tier", altBPr:0.001, altC:"mcp-gateway/Groq", altCPr:0.00 },
+  "supabase":    { cat:"db",     name:"Supabase",              price:0.00,   altB:"Supabase free",       altBPr:0.00, altC:"Supabase + D1",     altCPr:0.00 },
+  "stripe":      { cat:"payment",name:"Stripe",                price:2.90,   altB:"Stripe",              altBPr:2.90, altC:"Stripe",            altCPr:2.90 },
+  "vercel":      { cat:"infra",  name:"Vercel",                price:20.00,  altB:"Cloudflare Workers",  altBPr:0.00, altC:"CF Workers + DO",   altCPr:12.00 },
+  "cloudflare":  { cat:"infra",  name:"Cloudflare",            price:0.00,   altB:"Cloudflare",          altBPr:0.00, altC:"Cloudflare",        altCPr:0.00 },
+  "aws":         { cat:"infra",  name:"AWS",                   price:50.00,  altB:"Cloudflare Workers",  altBPr:5.00, altC:"CF + Supabase",     altCPr:12.00 },
+  "google":      { cat:"llm",    name:"Google Gemini",         priceIn:0.075,priceOut:0.30,  altB:"Groq Llama 3.3 70B", altBPrIn:0.59, altBPrOut:0.79, altC:"Groq free", altCPr:0.00 },
+  "azure":       { cat:"infra",  name:"Azure OpenAI",          priceIn:2.00, priceOut:8.00,  altB:"Groq Llama 3.3 70B", altBPrIn:0.59, altBPrOut:0.79, altC:"Groq free", altCPr:0.00 },
+  "deepseek":    { cat:"llm",    name:"DeepSeek",              priceIn:0.14, priceOut:0.28,  altB:"Groq Llama 3.3 70B", altBPrIn:0.59, altBPrOut:0.79, altC:"Groq free", altCPr:0.00 },
+  "perplexity":  { cat:"search", name:"Perplexity API",        price:0.005,  altB:"Tavily cheaper",      altBPr:0.001, altC:"mcp-gateway",      altCPr:0.00 },
+  "replicate":   { cat:"image",  name:"Replicate",             price:0.05,   altB:"Together FLUX free",  altBPr:0.00,  altC:"Together FLUX free",altCPr:0.00 },
+  "elevenlabs":  { cat:"tts",    name:"ElevenLabs TTS",        price:0.30,   altB:"Groq PlayAI TTS",     altBPr:0.05,  altC:"Groq TTS free",    altCPr:0.00 },
+};
+
+// Wykryj dostawców z HTML/JS/headers strony
+async function detectProviders(url, html, env) {
+  const htmlLower = (html || "").toLowerCase();
+  const detected = [];
+  
+  // Pattern matching z HTML
+  const patterns = {
+    "openai":     ["openai", "gpt-4", "gpt-5", "chatgpt", "dall-e", "whisper"],
+    "anthropic":  ["anthropic", "claude"],
+    "groq":       ["groq", "groqcloud"],
+    "together":   ["together.ai", "togetherai", "flux.1"],
+    "fal.ai":     ["fal.ai", "fal-ai", "kling", "runway"],
+    "twilio":     ["twilio", "programmable voice", "sendgrid"],
+    "sendgrid":   ["sendgrid", "@sendgrid"],
+    "tavily":     ["tavily"],
+    "supabase":   ["supabase"],
+    "stripe":     ["stripe"],
+    "vercel":     ["vercel", "_vercel"],
+    "cloudflare": ["cloudflare", "cf-ray", "workers.dev"],
+    "aws":        ["amazonaws", "aws-sdk", "lambda"],
+    "google":     ["gemini", "vertex", "googleapis"],
+    "azure":      ["azure", "openai.azure"],
+    "deepseek":   ["deepseek"],
+    "perplexity": ["perplexity"],
+    "replicate":  ["replicate"],
+    "elevenlabs": ["elevenlabs", "eleven labs"],
+  };
+  
+  for (const [key, terms] of Object.entries(patterns)) {
+    if (terms.some(t => htmlLower.includes(t))) {
+      if (KNOWN_PROVIDERS[key]) detected.push({ key, ...KNOWN_PROVIDERS[key] });
+    }
+  }
+
+  // Jeśli mało wykrytych, użyj LLM do analizy
+  if (detected.length < 2 && env.GROQ_KEY && html) {
+    try {
+      const gk = env.GROQ_KEY;
+      const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+        method:"POST", headers:{"Authorization":"Bearer "+gk,"Content-Type":"application/json"},
+        body: JSON.stringify({
+          model:"llama-3.1-8b-instant", max_tokens:500,
+          messages:[{role:"user", content:`Analyze this app URL: ${url}
+HTML fragment: ${html.slice(0,2000)}
+List API providers/services used. Return ONLY JSON array:
+[{"name":"OpenAI","category":"llm","confidence":"high"},...]
+Known providers: OpenAI, Anthropic, Groq, Together.ai, fal.ai, Twilio, Supabase, Stripe, Vercel, AWS, Cloudflare`}]
+        }), signal: AbortSignal.timeout(20000)
+      });
+      const d = await r.json();
+      const text = d.choices?.[0]?.message?.content || "[]";
+      const parsed = JSON.parse(text.replace(/\`\`\`json|\`\`\`/g,"").trim());
+      for (const p of (parsed || [])) {
+        const key = p.name?.toLowerCase().replace(/[^a-z]/g,"");
+        if (KNOWN_PROVIDERS[key] && !detected.find(d=>d.key===key)) {
+          detected.push({key, ...KNOWN_PROVIDERS[key]});
+        }
+      }
+    } catch(e) {}
+  }
+  
+  return detected;
+}
+
+// Generuj pełne porównanie 3 wariantów na podstawie wykrytych dostawców
+function generateBenchmark(appName, sourceUrl, providers, usage="medium") {
+  const tiers = {
+    light:  {chat:50, slides:5, img:2, calls:0, search:20},
+    medium: {chat:200, slides:20, img:10, calls:5, search:80},
+    heavy:  {chat:1000, slides:100, img:50, calls:20, search:300},
+  };
+  const t = tiers[usage] || tiers.medium;
+  
+  // Oblicz koszty dla każdego wariantu
+  const calcVariant = (variant) => {
+    let total = 0;
+    const breakdown = {};
+    
+    for (const p of providers) {
+      let cost = 0;
+      if (variant === "A") {
+        // Oryginalni dostawcy
+        if (p.cat === "llm") cost = t.chat * (p.priceIn + p.priceOut) * 0.001;
+        else if (p.cat === "image") cost = t.img * (p.price || 0);
+        else if (p.cat === "phone") cost = t.calls * 3 * (p.price || 0);
+        else if (p.cat === "search") cost = t.search * (p.price || 0);
+        else cost = p.price || 0;
+      } else if (variant === "B") {
+        // Best-of-breed alternatywy
+        if (p.cat === "llm") cost = t.chat * (p.altBPrIn + p.altBPrOut) * 0.001;
+        else if (p.cat === "image") cost = t.img * (p.altBPr || 0);
+        else if (p.cat === "phone") cost = t.calls * 3 * (p.altBPr || 0);
+        else if (p.cat === "search") cost = t.search * (p.altBPr || 0);
+        else cost = p.altBPr || 0;
+      } else {
+        // ofshore Mesh
+        if (p.cat === "llm") cost = 0; // Groq free tier
+        else if (p.cat === "image") cost = 0; // FLUX free
+        else if (p.cat === "phone") cost = t.calls * 3 * (p.altCPr || 0);
+        else if (p.cat === "search") cost = 0; // mcp-gateway
+        else cost = p.altCPr || 0;
+      }
+      breakdown[p.cat] = (breakdown[p.cat] || 0) + cost;
+      total += cost;
+    }
+    
+    // Dodaj infra koszt
+    const infraCost = variant === "A" ? 20 : variant === "B" ? 5 : 12;
+    breakdown["infra"] = infraCost;
+    total += infraCost;
+    
+    return { total: +total.toFixed(2), breakdown };
+  };
+  
+  const costs = {
+    A: calcVariant("A"),
+    B: calcVariant("B"),
+    C: calcVariant("C"),
+  };
+  
+  const savingsB = costs.A.total > 0 ? Math.round((costs.A.total - costs.B.total) / costs.A.total * 100) : 0;
+  const savingsC = costs.A.total > 0 ? Math.round((costs.A.total - costs.C.total) / costs.A.total * 100) : 0;
+  
+  return {
+    app: appName,
+    source_url: sourceUrl,
+    usage_tier: usage,
+    detected_providers: providers.map(p => ({
+      name: p.name, category: p.cat,
+      variant_A: p.name,
+      variant_B: p.altB || p.name,
+      variant_C: p.altC || "Groq free",
+    })),
+    costs,
+    savings: {
+      "B_vs_A": `${savingsB}%`,
+      "C_vs_A": `${savingsC}%`,
+    },
+    verdict: {
+      A: `${appName} 1:1 — oryginalni dostawcy. Najwyższa jakość, najdroższy.`,
+      B: `Best-of-Breed — zoptymalizowane alternatywy. ${savingsB}% taniej przy zachowaniu 85%+ jakości.`,
+      C: `ofshore Mesh — Twój autonomiczny stack. ${savingsC}% taniej, 100% kontrola, zero vendor lock-in.`,
+    },
+    pricing_source: "OpenAI Q1 2026, Groq, fal.ai, Twilio 2025",
+  };
+}
+
+// Rozszerzenie handleClone o auto-benchmark
+async function handleProviderAnalysis(request, env) {
+  const { url: targetUrl, usage } = await request.json().catch(()=>({}));
+  if (!targetUrl) return J({error:"url required"}, 400);
+  
+  // Pobierz HTML
+  let html = "";
+  try {
+    const r = await fetch(targetUrl, {
+      headers:{"User-Agent":"Mozilla/5.0"}, signal:AbortSignal.timeout(15000)
+    });
+    html = await r.text();
+  } catch(e) {}
+  
+  const providers = await detectProviders(targetUrl, html, env);
+  const appName = html.match(/<title[^>]*>([^<]+)<\/title>/i)?.[1] || targetUrl.split('/')[2] || "App";
+  const benchmark = generateBenchmark(appName, targetUrl, providers, usage||"medium");
+  
+  return J({
+    ok: true,
+    app_name: appName,
+    providers_detected: providers.length,
+    benchmark,
+    raw_providers: providers,
+  });
+}
