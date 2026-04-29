@@ -1,3 +1,5 @@
+// HOLON-META: {"purpose": "genspark-worker", "wiki": "32d6d069-74d6-8164-a6d5-f41c3d26ae9b"}
+
 // genspark-worker v2 - Groq primary, secrets via CF env
 
 const ANTI_SYCOPHANCY_PROMPT = `You are a direct, honest AI assistant. Rules:
